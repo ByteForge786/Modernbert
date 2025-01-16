@@ -1,3 +1,46 @@
+def create_nli_dataset(self, df: pd.DataFrame, k_negatives: int = 3, cache_file: str = None) -> List[Dict]:
+    """Create NLI pairs with labels following standard format"""
+    
+    # Check if cached file exists
+    if cache_file and os.path.exists(cache_file):
+        logging.info(f"Loading cached NLI pairs from {cache_file}")
+        with open(cache_file, 'r') as f:
+            return json.load(f)
+    
+    logging.info("Starting NLI dataset creation...")
+    
+    # Rest of the existing create_nli_dataset code...
+    # [Previous code for creating nli_pairs remains exactly the same]
+    
+    # Save the results if cache_file is provided
+    if cache_file:
+        logging.info(f"Saving NLI pairs to {cache_file}")
+        with open(cache_file, 'w') as f:
+            json.dump(nli_pairs, f)
+    
+    return nli_pairs
+
+# In the main code, modify how we call it:
+# Create NLI pairs with caching
+train_pairs = processor.create_nli_dataset(
+    train_df, 
+    k_negatives=3,
+    cache_file="cached_train_pairs.json"
+)
+val_pairs = processor.create_nli_dataset(
+    val_df, 
+    k_negatives=3, 
+    cache_file="cached_val_pairs.json"
+)
+test_pairs = processor.create_nli_dataset(
+    test_df, 
+    k_negatives=3,
+    cache_file="cached_test_pairs.json"
+)
+
+
+
+
 def prepare_and_analyze_data(attributes_df, definitions_df, test_size=0.1, val_size=0.1):
     """Prepare and analyze data distribution before NLI processing"""
     logging.info("Starting data preparation and analysis...")
