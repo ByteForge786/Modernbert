@@ -1,85 +1,15 @@
-def evaluate_per_label_metrics(y_true, y_pred, labels=None):
-    """
-    Calculate precision, recall, and F1 for each label
-    
-    Args:
-        y_true: True labels
-        y_pred: Predicted labels
-        labels: Optional label mapping dictionary
-    """
-    from sklearn.metrics import classification_report, confusion_matrix
-    import numpy as np
-    
-    # If no labels provided, use default NLI labels
-    if labels is None:
-        labels = {
-            1: "entailment",
-            0: "contradiction"
-        }
-    
-    # Get detailed classification report
-    report = classification_report(
-        y_true, 
-        y_pred,
-        target_names=[labels[0], labels[1]],
-        digits=4,
-        output_dict=True
-    )
-    
-    # Calculate confusion matrix
-    cm = confusion_matrix(y_true, y_pred)
-    
-    # Print detailed metrics
-    print("\nPer-Label Metrics:")
-    print("-" * 50)
-    
-    for label_id, label_name in labels.items():
-        metrics = report[label_name]
-        print(f"\n{label_name.upper()}:")
-        print(f"Precision: {metrics['precision']:.4f}")
-        print(f"Recall: {metrics['recall']:.4f}")
-        print(f"F1-score: {metrics['f1-score']:.4f}")
-        print(f"Support: {metrics['support']}")
-    
-    print("\nConfusion Matrix:")
-    print("-" * 50)
-    print("                 Predicted")
-    print("                 Contra.  Entail.")
-    print(f"Actual Contra.   {cm[0][0]:<8} {cm[0][1]:<8}")
-    print(f"      Entail.   {cm[1][0]:<8} {cm[1][1]:<8}")
-    
-    # Return metrics dictionary for further use if needed
-    return report
-
-# Usage example (outside main):
-if __name__ == "__main__":
-    # ... (previous main code) ...
-    
-    # After getting predictions on test set
-    predictor = NLIPredictor("nli-model")
-    test_predictions = predictor.predict_batch(test_nli)
-    
-    # Convert labels to numeric format
-    true_labels = [LABEL_MAP[label] for label in test_nli['label']]
-    pred_labels = [LABEL_MAP[label] for label in test_predictions['label']]
-    
-    # Calculate per-label metrics
-    detailed_metrics = evaluate_per_label_metrics(
-        true_labels,
-        pred_labels,
-        labels={v: k for k, v in LABEL_MAP.items()}  # Reverse the label mapping
-    )
-
-
-
-
-
-
-
-
 import pandas as pd
 import numpy as np
-from transformers import AutoTokenizer, AutoModelForSequenceClassification, Trainer, TrainingArguments, pipeline
+from transformers import (
+    AutoTokenizer, 
+    AutoModelForSequenceClassification, 
+    Trainer, 
+    TrainingArguments,
+    DataCollatorWithPadding,
+    AutoConfig,
+    EarlyStoppingCallback,
+    pipeline
+)
 import torch
 from torch.utils.data import Dataset
 import logging
@@ -88,9 +18,13 @@ from tqdm import tqdm
 import os
 import evaluate
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, confusion_matrix
 from typing import List, Dict, Tuple
 import matplotlib.pyplot as plt
+import random
+import json
 
+# Set up logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -106,11 +40,31 @@ LABEL_MAP = {
     "contradiction": 0
 }
 
+def set_seed(seed_val=42):
+    """Set random seeds for reproducibility"""
+    random.seed(seed_val)
+    np.random.seed(seed_val)
+    torch.manual_seed(seed_val)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed_val)
+
 def prepare_and_analyze_data(attributes_df, definitions_df, test_size=0.1, val_size=0.1):
-    """
-    Prepare and analyze data distribution before NLI processing
-    """
+    """Prepare and analyze data distribution before NLI processing"""
     logging.info("Starting data preparation and analysis...")
+    
+    # Validate input data
+    required_columns = ['domain', 'concept', 'description', 'concept_definition']
+    for df, name in [(attributes_df, 'attributes'), (definitions_df, 'definitions')]:
+        missing_cols = [col for col in required_columns if col not in df.columns]
+        if missing_cols:
+            raise ValueError(f"Missing required columns in {name}_df: {missing_cols}")
+    
+    # Check for missing values
+    for df, name in [(attributes_df, 'attributes'), (definitions_df, 'definitions')]:
+        missing_values = df.isnull().sum()
+        if missing_values.any():
+            logging.warning(f"Found missing values in {name}_df:\n{missing_values[missing_values > 0]}")
+            df.dropna(inplace=True)
     
     # Merge dataframes
     df = pd.merge(attributes_df, definitions_df, on=['domain', 'concept'])
@@ -130,10 +84,9 @@ def prepare_and_analyze_data(attributes_df, definitions_df, test_size=0.1, val_s
     logging.info(f"Train size: {len(train_df)}, Val size: {len(val_df)}, Test size: {len(test_df)}")
     
     # Initialize tokenizer for length analysis
-    tokenizer = AutoTokenizer.from_pretrained("answerdotai/ModernBERT-base")
+    tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
     
     def get_sequence_length(row):
-        # Tokenize with NLI format: [CLS] premise [SEP] hypothesis [SEP]
         tokens = tokenizer(
             row['description'],
             row['concept_definition'],
@@ -160,25 +113,34 @@ def prepare_and_analyze_data(attributes_df, definitions_df, test_size=0.1, val_s
     plt.savefig('length_distribution.png')
     plt.close()
     
-    # Log length statistics
+    # Save length statistics
+    length_stats = {}
     for name, lengths in [('Train', train_lengths), ('Val', val_lengths), ('Test', test_lengths)]:
+        length_stats[name] = {
+            'mean': float(np.mean(lengths)),
+            'median': float(np.median(lengths)),
+            'p95': float(np.percentile(lengths, 95)),
+            'max': float(max(lengths))
+        }
         logging.info(f"{name} length stats:")
-        logging.info(f"  Mean: {np.mean(lengths):.2f}")
-        logging.info(f"  Median: {np.median(lengths):.2f}")
-        logging.info(f"  95th percentile: {np.percentile(lengths, 95):.2f}")
-        logging.info(f"  Max: {max(lengths)}")
+        for stat, value in length_stats[name].items():
+            logging.info(f"  {stat}: {value:.2f}")
+    
+    # Save statistics to file
+    with open('data_statistics.json', 'w') as f:
+        json.dump(length_stats, f, indent=2)
     
     return train_df, val_df, test_df
 
 class DataProcessor:
-    def __init__(self, model_id="answerdotai/ModernBERT-base", batch_size=32):
+    def __init__(self, model_id="bert-base-uncased", batch_size=32):
         self.model_id = model_id
         self.batch_size = batch_size
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.classifier = pipeline(
             "zero-shot-classification",
             model=model_id,
-            device=0 if torch.cuda.is_available() else -1
+            device=-1  # CPU-based
         )
     
     def process_batch_zeroshot(self, description: str, candidate_definitions: List[str]) -> List[int]:
@@ -236,7 +198,6 @@ class DataProcessor:
             for chunk in chunks:
                 futures.append(executor.submit(self.process_chunk, chunk, all_definitions))
             
-            # Collect results with progress bar
             results = []
             for future in tqdm(futures, desc="Processing chunks"):
                 results.extend(future.result())
@@ -265,117 +226,162 @@ class DataProcessor:
 
 class NLIDataset(Dataset):
     def __init__(self, data: pd.DataFrame, tokenizer, max_length: int = 512):
+        """Initialize NLI dataset"""
         self.tokenizer = tokenizer
         self.max_length = max_length
-        
-        # Convert string labels to integers using standard mapping
-        self.labels = torch.tensor([LABEL_MAP[label] for label in data['label']], dtype=torch.long)
-        
-        # Create encodings following standard NLI format
-        self.encodings = tokenizer(
-            data['premise'].tolist(),
-            data['hypothesis'].tolist(),
-            padding='max_length',
-            truncation=True,
-            max_length=max_length,
-            return_tensors='pt',
-            return_token_type_ids=True,
-            add_special_tokens=True  # [CLS] premise [SEP] hypothesis [SEP]
-        )
+        self.premises = data['premise'].tolist()
+        self.hypotheses = data['hypothesis'].tolist()
+        self.labels = [LABEL_MAP[label] for label in data['label']]
 
     def __len__(self):
         return len(self.labels)
 
     def __getitem__(self, idx):
         return {
-            'input_ids': self.encodings['input_ids'][idx],
-            'attention_mask': self.encodings['attention_mask'][idx],
-            'token_type_ids': self.encodings['token_type_ids'][idx],
-            'labels': self.labels[idx]
+            'premise': self.premises[idx],
+            'hypothesis': self.hypotheses[idx],
+            'label': self.labels[idx]
         }
+
+def compute_metrics(eval_pred):
+    """Compute metrics for evaluation"""
+    predictions, labels = eval_pred
+    predictions = np.argmax(predictions, axis=1)
+    
+    # Standard metrics
+    metric_accuracy = evaluate.load("accuracy")
+    metric_f1 = evaluate.load("f1")
+    
+    accuracy = metric_accuracy.compute(predictions=predictions, references=labels)
+    f1 = metric_f1.compute(predictions=predictions, references=labels, average='weighted')
+    
+    # Additional metrics
+    report = classification_report(labels, predictions, output_dict=True)
+    cm = confusion_matrix(labels, predictions)
+    tn, fp, fn, tp = cm.ravel()
+    
+    # Calculate additional metrics
+    specificity = tn / (tn + fp) if (tn + fp) != 0 else 0
+    npv = tn / (tn + fn) if (tn + fn) != 0 else 0
+    
+    return {
+        'accuracy': accuracy['accuracy'],
+        'f1': f1['f1'],
+        'specificity': specificity,
+        'npv': npv,
+        'true_positives': tp,
+        'true_negatives': tn,
+        'false_positives': fp,
+        'false_negatives': fn
+    }
 
 def train_nli_model(
     train_data: pd.DataFrame,
     val_data: pd.DataFrame,
-    model_id: str = "answerdotai/ModernBERT-base",
+    model_id: str = "bert-base-uncased",
     output_dir: str = "nli-model",
     num_epochs: int = 3
 ):
     """Train NLI model following standard practices"""
     logging.info("Starting NLI model training...")
     
+    # Initialize config with dropout
+    config = AutoConfig.from_pretrained(model_id)
+    config.hidden_dropout_prob = 0.1
+    config.attention_probs_dropout_prob = 0.1
+    config.num_labels = len(LABEL_MAP)
+    config.problem_type = "single_label_classification"
+    
     # Initialize tokenizer and model
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     model = AutoModelForSequenceClassification.from_pretrained(
         model_id,
-        num_labels=len(LABEL_MAP),  # Standard binary NLI
-        problem_type="single_label_classification"
+        config=config
     )
     
     # Create datasets
     train_dataset = NLIDataset(train_data, tokenizer)
     eval_dataset = NLIDataset(val_data, tokenizer)
     
-    # Standard NLI training arguments
+    # Calculate steps
+    num_update_steps_per_epoch = len(train_dataset) // 16
+    max_steps = num_epochs * num_update_steps_per_epoch
+    
+    # Create data collator
+    data_collator = DataCollatorWithPadding(
+        tokenizer=tokenizer,
+        padding=True,
+        return_tensors="pt"
+    )
+    
+    # Calculate warmup steps (10% of total steps)
+    num_train_examples = len(train_dataset)
+    num_train_steps = (num_train_examples * num_epochs) // 16
+    num_warmup_steps = num_train_steps // 10
+
+    # Training arguments
     training_args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=num_epochs,
         per_device_train_batch_size=16,
         per_device_eval_batch_size=16,
-        warmup_ratio=0.1,
+        warmup_steps=num_warmup_steps,  # Use explicit warmup steps
         weight_decay=0.01,
-        learning_rate=2e-5,  # Standard fine-tuning LR
-        evaluation_strategy="epoch",
-        save_strategy="epoch",
+        learning_rate=2e-5,
+        lr_scheduler_type="linear",  # Explicit scheduler type
+        evaluation_strategy="steps",
+        eval_steps=100,
+        save_strategy="steps",
+        save_steps=100,
+        save_total_limit=2,
         load_best_model_at_end=True,
-        metric_for_best_model="accuracy",  # Standard NLI metric
+        metric_for_best_model="f1",
         greater_is_better=True,
-        fp16=torch.cuda.is_available(),
         logging_dir=f"{output_dir}/logs",
-        logging_steps=100,
-        save_total_limit=2
+        logging_steps=10,
+        max_grad_norm=1.0,
+        gradient_accumulation_steps=1,
+        dataloader_num_workers=4,
+        group_by_length=True,
+        disable_tqdm=False,
+        report_to="none"  # Disable wandb/tensorboard
     )
     
-    # Standard NLI metrics
-    metric_accuracy = evaluate.load("accuracy")
-    metric_f1 = evaluate.load("f1")
+    # Early stopping callback
+    early_stopping = EarlyStoppingCallback(
+        early_stopping_patience=3,
+        early_stopping_threshold=0.001
+    )
     
-    def compute_metrics(eval_pred):
-        predictions, labels = eval_pred
-        predictions = np.argmax(predictions, axis=1)
-        
-        # Standard NLI metrics
-        accuracy = metric_accuracy.compute(predictions=predictions, references=labels)
-        f1 = metric_f1.compute(predictions=predictions, references=labels, average='weighted')
-        
-        return {
-            'accuracy': accuracy['accuracy'],
-            'f1': f1['f1']
-        }
-    
-    # Initialize trainer with standard settings
+    # Initialize trainer
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
+        data_collator=data_collator,
         compute_metrics=compute_metrics,
+        callbacks=[early_stopping],
         tokenizer=tokenizer
     )
     
     # Train and save
     trainer.train()
+    
+    # Save model, tokenizer and config
     trainer.save_model(output_dir)
     tokenizer.save_pretrained(output_dir)
+    config.save_pretrained(output_dir)
     
     logging.info(f"Model saved to {output_dir}")
     return trainer, tokenizer
 
 class NLIPredictor:
     def __init__(self, model_path: str):
+        """Initialize NLI predictor"""
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
         self.model = AutoModelForSequenceClassification.from_pretrained(model_path)
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cpu")
         self.model.to(self.device)
         self.model.eval()
         
@@ -434,7 +440,51 @@ class NLIPredictor:
             
         return pd.DataFrame(results)
 
+def evaluate_per_label_metrics(y_true, y_pred, labels=None):
+    """Calculate precision, recall, and F1 for each label"""
+    if labels is None:
+        labels = {
+            1: "entailment",
+            0: "contradiction"
+        }
+    
+    # Get detailed classification report
+    report = classification_report(
+        y_true, 
+        y_pred,
+        target_names=[labels[0], labels[1]],
+        digits=4,
+        output_dict=True
+    )
+    
+    # Calculate confusion matrix
+    cm = confusion_matrix(y_true, y_pred)
+    
+    # Print detailed metrics
+    print("\nPer-Label Metrics:")
+    print("-" * 50)
+    
+    for label_id, label_name in labels.items():
+        metrics = report[label_name]
+        print(f"\n{label_name.upper()}:")
+        print(f"Precision: {metrics['precision']:.4f}")
+        print(f"Recall: {metrics['recall']:.4f}")
+        print(f"F1-score: {metrics['f1-score']:.4f}")
+        print(f"Support: {metrics['support']}")
+    
+    print("\nConfusion Matrix:")
+    print("-" * 50)
+    print("                 Predicted")
+    print("                 Contra.  Entail.")
+    print(f"Actual Contra.   {cm[0][0]:<8} {cm[0][1]:<8}")
+    print(f"      Entail.   {cm[1][0]:<8} {cm[1][1]:<8}")
+    
+    return report
+
 if __name__ == "__main__":
+    # Set random seeds
+    set_seed(42)
+    
     # Load data
     attributes_df = pd.read_csv("attributes.csv")
     definitions_df = pd.read_csv("definitions.csv")
@@ -453,6 +503,7 @@ if __name__ == "__main__":
     val_nli = pd.DataFrame(val_pairs)
     test_nli = pd.DataFrame(test_pairs)
     
+    # Log data distribution
     logging.info("Data distribution:")
     for split_name, split_data in [("Train", train_nli), ("Val", val_nli), ("Test", test_nli)]:
         total = len(split_data)
@@ -463,12 +514,23 @@ if __name__ == "__main__":
         logging.info(f"  Entailment: {entailment} ({entailment/total*100:.2f}%)")
         logging.info(f"  Contradiction: {contradiction} ({contradiction/total*100:.2f}%)")
     
+    # Initialize tokenizer and create data collator
+    tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+    data_collator = DataCollatorWithPadding(
+        tokenizer=tokenizer,
+        padding=True,
+        max_length=512,
+        pad_to_multiple_of=8,
+        return_tensors="pt"
+    )
+    
     # Train model
     trainer, tokenizer = train_nli_model(
         train_data=train_nli,
         val_data=val_nli,
-        model_id="answerdotai/ModernBERT-base",
-        output_dir="nli-model"
+        model_id="bert-base-uncased",
+        output_dir="nli-model",
+        num_epochs=3
     )
     
     # Evaluate on test set
@@ -479,15 +541,16 @@ if __name__ == "__main__":
     true_labels = [LABEL_MAP[label] for label in test_nli['label']]
     pred_labels = [LABEL_MAP[label] for label in test_predictions['label']]
     
-    metric_accuracy = evaluate.load("accuracy")
-    metric_f1 = evaluate.load("f1")
+    # Detailed evaluation
+    detailed_metrics = evaluate_per_label_metrics(
+        true_labels,
+        pred_labels,
+        labels={v: k for k, v in LABEL_MAP.items()}
+    )
     
-    test_accuracy = metric_accuracy.compute(predictions=pred_labels, references=true_labels)
-    test_f1 = metric_f1.compute(predictions=pred_labels, references=true_labels, average='weighted')
-    
-    logging.info("Test Set Evaluation:")
-    logging.info(f"  Accuracy: {test_accuracy['accuracy']:.4f}")
-    logging.info(f"  F1 Score: {test_f1['f1']:.4f}")
+    # Save detailed metrics
+    with open('detailed_metrics.json', 'w') as f:
+        json.dump(detailed_metrics, f, indent=2)
     
     # Example predictions
     example_pairs = [
