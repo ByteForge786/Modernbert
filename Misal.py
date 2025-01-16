@@ -1,3 +1,62 @@
+def prepare_and_analyze_data(attributes_df, definitions_df, test_size=0.1, val_size=0.1):
+    """Prepare and analyze data distribution before NLI processing"""
+    logging.info("Starting data preparation and analysis...")
+    
+    # Validate input data - Fix the column validation
+    attributes_required = ['domain', 'concept', 'description', 'attribute_name']
+    definitions_required = ['domain', 'concept', 'concept_definition']
+    
+    # Check attributes DataFrame
+    missing_attrs = [col for col in attributes_required if col not in attributes_df.columns]
+    if missing_attrs:
+        raise ValueError(f"Missing required columns in attributes_df: {missing_attrs}")
+    
+    # Check definitions DataFrame
+    missing_defs = [col for col in definitions_required if col not in definitions_df.columns]
+    if missing_defs:
+        raise ValueError(f"Missing required columns in definitions_df: {missing_defs}")
+    
+    # Check for missing values
+    for df, name in [(attributes_df, 'attributes'), (definitions_df, 'definitions')]:
+        missing_values = df.isnull().sum()
+        if missing_values.any():
+            logging.warning(f"Found missing values in {name}_df:\n{missing_values[missing_values > 0]}")
+            df.dropna(inplace=True)
+    
+    # Combine attribute_name with description and add augmentations
+    def augment_description(row):
+        # Original format: "{attribute_name} - {description}"
+        base = f"{row['attribute_name']} - {row['description']}"
+        
+        # Augmentations
+        variations = [
+            base,  # Original
+            f"This {row['attribute_name']}: {row['description']}", # Variation 1
+            f"The {row['attribute_name']} is described as: {row['description']}", # Variation 2
+            f"Regarding {row['attribute_name']}, {row['description']}" # Variation 3
+        ]
+        return random.choice(variations)
+
+    # Apply augmentation to create enhanced description
+    attributes_df['enhanced_description'] = attributes_df.apply(augment_description, axis=1)
+    
+    # Merge dataframes using enhanced_description
+    df = pd.merge(
+        attributes_df[['domain', 'concept', 'enhanced_description']], 
+        definitions_df[['domain', 'concept', 'concept_definition']], 
+        on=['domain', 'concept']
+    )
+    
+    # Rename enhanced_description to description for compatibility with rest of the code
+    df = df.rename(columns={'enhanced_description': 'description'})
+    
+    # Rest of the function remains the same...
+    # Shuffle data
+    df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+
+
+
+
 def compute_metrics(eval_pred):
     predictions, labels = eval_pred
     predictions = np.argmax(predictions, axis=1)
