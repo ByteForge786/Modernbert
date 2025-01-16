@@ -1,42 +1,39 @@
-def create_nli_dataset(self, df: pd.DataFrame, k_negatives: int = 3, cache_file: str = None) -> List[Dict]:
-    """Create NLI pairs with labels following standard format"""
-    
-    # Check if cached file exists
-    if cache_file and os.path.exists(cache_file):
-        logging.info(f"Loading cached NLI pairs from {cache_file}")
-        with open(cache_file, 'r') as f:
-            return json.load(f)
-    
-    logging.info("Starting NLI dataset creation...")
-    
-    # Rest of the existing create_nli_dataset code...
-    # [Previous code for creating nli_pairs remains exactly the same]
-    
-    # Save the results if cache_file is provided
-    if cache_file:
-        logging.info(f"Saving NLI pairs to {cache_file}")
+class DataProcessor:
+    def __init__(self, model_id="bert-base-uncased", batch_size=32, cache_dir="nli_cache"):
+        self.model_id = model_id
+        self.batch_size = batch_size
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.classifier = pipeline(
+            "zero-shot-classification",
+            model=model_id,
+            device=-1  # CPU-based
+        )
+        # Add cache directory
+        self.cache_dir = cache_dir
+        if not os.path.exists(cache_dir):
+            os.makedirs(cache_dir)
+
+    def create_nli_dataset(self, df: pd.DataFrame, k_negatives: int = 3) -> List[Dict]:
+        """Create NLI pairs with labels following standard format"""
+        # Generate cache filename based on dataframe hash and k_negatives
+        df_hash = pd.util.hash_pandas_object(df).sum()
+        cache_file = os.path.join(self.cache_dir, f"nli_pairs_{df_hash}_{k_negatives}.json")
+        
+        if os.path.exists(cache_file):
+            logging.info(f"Loading cached NLI pairs from {cache_file}")
+            with open(cache_file, 'r') as f:
+                return json.load(f)
+        
+        logging.info("Starting NLI dataset creation...")
+        
+        # Existing code remains exactly the same...
+        
+        # Save to cache before returning
         with open(cache_file, 'w') as f:
             json.dump(nli_pairs, f)
-    
-    return nli_pairs
+            
+        return nli_pairs
 
-# In the main code, modify how we call it:
-# Create NLI pairs with caching
-train_pairs = processor.create_nli_dataset(
-    train_df, 
-    k_negatives=3,
-    cache_file="cached_train_pairs.json"
-)
-val_pairs = processor.create_nli_dataset(
-    val_df, 
-    k_negatives=3, 
-    cache_file="cached_val_pairs.json"
-)
-test_pairs = processor.create_nli_dataset(
-    test_df, 
-    k_negatives=3,
-    cache_file="cached_test_pairs.json"
-)
 
 
 
