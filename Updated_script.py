@@ -1,3 +1,82 @@
+def evaluate_per_label_metrics(y_true, y_pred, labels=None):
+    """
+    Calculate precision, recall, and F1 for each label
+    
+    Args:
+        y_true: True labels
+        y_pred: Predicted labels
+        labels: Optional label mapping dictionary
+    """
+    from sklearn.metrics import classification_report, confusion_matrix
+    import numpy as np
+    
+    # If no labels provided, use default NLI labels
+    if labels is None:
+        labels = {
+            1: "entailment",
+            0: "contradiction"
+        }
+    
+    # Get detailed classification report
+    report = classification_report(
+        y_true, 
+        y_pred,
+        target_names=[labels[0], labels[1]],
+        digits=4,
+        output_dict=True
+    )
+    
+    # Calculate confusion matrix
+    cm = confusion_matrix(y_true, y_pred)
+    
+    # Print detailed metrics
+    print("\nPer-Label Metrics:")
+    print("-" * 50)
+    
+    for label_id, label_name in labels.items():
+        metrics = report[label_name]
+        print(f"\n{label_name.upper()}:")
+        print(f"Precision: {metrics['precision']:.4f}")
+        print(f"Recall: {metrics['recall']:.4f}")
+        print(f"F1-score: {metrics['f1-score']:.4f}")
+        print(f"Support: {metrics['support']}")
+    
+    print("\nConfusion Matrix:")
+    print("-" * 50)
+    print("                 Predicted")
+    print("                 Contra.  Entail.")
+    print(f"Actual Contra.   {cm[0][0]:<8} {cm[0][1]:<8}")
+    print(f"      Entail.   {cm[1][0]:<8} {cm[1][1]:<8}")
+    
+    # Return metrics dictionary for further use if needed
+    return report
+
+# Usage example (outside main):
+if __name__ == "__main__":
+    # ... (previous main code) ...
+    
+    # After getting predictions on test set
+    predictor = NLIPredictor("nli-model")
+    test_predictions = predictor.predict_batch(test_nli)
+    
+    # Convert labels to numeric format
+    true_labels = [LABEL_MAP[label] for label in test_nli['label']]
+    pred_labels = [LABEL_MAP[label] for label in test_predictions['label']]
+    
+    # Calculate per-label metrics
+    detailed_metrics = evaluate_per_label_metrics(
+        true_labels,
+        pred_labels,
+        labels={v: k for k, v in LABEL_MAP.items()}  # Reverse the label mapping
+    )
+
+
+
+
+
+
+
+
 import pandas as pd
 import numpy as np
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, Trainer, TrainingArguments, pipeline
