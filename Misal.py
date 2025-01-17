@@ -1,3 +1,91 @@
+# 1. Add constant at the top after imports
+MAX_SEQUENCE_LENGTH = 512  # Maximum sequence length for BERT models
+
+# 2. Update prepare_and_analyze_data function's get_sequence_length:
+def get_sequence_length(row):
+    tokens = tokenizer(
+        row['description'],
+        row['concept_definition'],
+        add_special_tokens=True,
+        truncation=True,
+        max_length=MAX_SEQUENCE_LENGTH,
+        return_tensors='pt'
+    )
+    return len(tokens['input_ids'][0])
+
+# 3. Update NLIDataset class:
+class NLIDataset(Dataset):
+    def __init__(self, data: pd.DataFrame, tokenizer, max_length: int = MAX_SEQUENCE_LENGTH):
+        """Initialize NLI dataset"""
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.premises = data['premise'].tolist()
+        self.hypotheses = data['hypothesis'].tolist()
+        self.labels = [LABEL_MAP[label] for label in data['label']]
+
+    def __len__(self):
+        return len(self.labels)
+
+    def __getitem__(self, idx):
+        encoded = self.tokenizer(
+            text=self.premises[idx],
+            text_pair=self.hypotheses[idx],
+            truncation=True,
+            max_length=self.max_length,
+            padding='max_length',
+            return_tensors=None
+        )
+        return {
+            'input_ids': encoded['input_ids'],
+            'attention_mask': encoded['attention_mask'],
+            'label': self.labels[idx]
+        }
+
+# 4. Update data_collator in train_nli_model function:
+data_collator = DataCollatorWithPadding(
+    tokenizer=tokenizer,
+    padding='max_length',
+    max_length=MAX_SEQUENCE_LENGTH,
+    return_tensors="pt"
+)
+
+# 5. Update NLIPredictor class predict methods:
+def predict(self, premise: str, hypothesis: str) -> Dict:
+    """Make NLI prediction following standard format"""
+    inputs = self.tokenizer(
+        premise,
+        hypothesis,
+        padding='max_length',
+        truncation=True,
+        max_length=MAX_SEQUENCE_LENGTH,
+        return_tensors="pt"
+    )
+
+def predict_batch(self, data: pd.DataFrame, batch_size: int = 32) -> pd.DataFrame:
+    """Batch prediction for multiple examples"""
+    results = []
+    
+    for i in tqdm(range(0, len(data), batch_size)):
+        batch = data.iloc[i:i+batch_size]
+        inputs = self.tokenizer(
+            batch['premise'].tolist(),
+            batch['hypothesis'].tolist(),
+            padding='max_length',
+            truncation=True,
+            max_length=MAX_SEQUENCE_LENGTH,
+            return_tensors="pt"
+        )
+
+
+
+
+
+
+
+
+
+
+
 # 1. Add this constant at the top of the file, after the imports:
 MAX_SEQUENCE_LENGTH = 512  # Maximum sequence length for BERT models
 
