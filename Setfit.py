@@ -11,6 +11,9 @@ import os
 from datetime import datetime
 import json
 import pickle
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
 
 # Set up logging
 logging.basicConfig(
@@ -103,6 +106,13 @@ class ConceptClassifier:
         self.num_epochs = num_epochs
         self.best_model_path = None
         self.best_score = 0.0
+        
+        # Define the fixed split mapping for NLI cache files
+        self.split_mapping = {
+            '109041164578947912': 'train',
+            '204910560809856016': 'val',
+            '296292887499757834': 'test'
+        }
 
     def prepare_training_data(self, train_df, val_df, concept_df):
         # Check if processed pairs exist
@@ -167,7 +177,7 @@ class ConceptClassifier:
             
         return train_pairs, train_labels, val_pairs, val_labels
 
-    def train(self, train_df, val_df, concept_df):
+    def train(self, train_pairs, train_labels, val_pairs, val_labels):
         """
         Train the model with checkpointing and logging
         """
@@ -251,19 +261,35 @@ class ConceptClassifier:
         return metrics
 
 def main():
-    # Set up logging
     logger = logging.getLogger(__name__)
     
     try:
-        # Initialize dataset
-        dataset = ConceptDataset('attributes.csv', 'concepts.csv')
-        
-        # Create splits
-        train_df, val_df, test_df = dataset.create_train_val_test_split()
-        
-        # Initialize and train classifier
+        # Initialize classifier
         classifier = ConceptClassifier(batch_size=32, num_epochs=5)
-        best_model_path, best_score = classifier.train(train_df, val_df, dataset.concept_df)
+        
+        try:
+            # First try to use NLI cache
+            train_pairs, train_labels, val_pairs, val_labels, test_pairs, test_labels = \
+                classifier.prepare_training_data(nli_cache_dir='nli_cache')
+            logger.info("Successfully loaded pre-computed NLI pairs")
+        except Exception as e:
+            logger.warning(f"Failed to load NLI cache: {e}")
+            logger.info("Falling back to generating pairs from raw data...")
+            
+            # Initialize dataset for fallback
+            dataset = ConceptDataset('attributes.csv', 'concepts.csv')
+            train_df, val_df, test_df = dataset.create_train_val_test_split()
+            
+            # Generate pairs using fallback method
+            train_pairs, train_labels, val_pairs, val_labels, test_pairs, test_labels = \
+                classifier.prepare_training_data(
+                    train_df=train_df,
+                    val_df=val_df,
+                    concept_df=dataset.concept_df
+                )
+        
+        # Train the model using pre-computed pairs
+        best_model_path, best_score = classifier.train(train_pairs, train_labels, val_pairs, val_labels)
         
         logger.info(f"Training completed. Best model saved at: {best_model_path}")
         logger.info(f"Best validation F1 score: {best_score:.4f}")
