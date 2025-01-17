@@ -1,3 +1,141 @@
+class ConceptClassifier:
+    def __init__(self, model_name="sentence-transformers/all-mpnet-base-v2", batch_size=16, num_epochs=3):
+        self.logger = logging.getLogger(__name__)
+        self.model_name = model_name
+        self.batch_size = batch_size
+        self.num_epochs = num_epochs
+        self.best_model_path = None
+        self.best_score = 0.0
+        
+        # Define the fixed split mapping for NLI cache files
+        self.split_mapping = {
+            '109041164578947912': 'train',
+            '204910560809856016': 'val',
+            '296292887499757834': 'test'
+        }
+
+    def load_from_nli_cache(self, nli_cache_dir):
+        """
+        Load pre-computed NLI pairs from cache directory
+        """
+        try:
+            self.logger.info(f"Attempting to load NLI cache from {nli_cache_dir}")
+            train_pairs = []
+            train_labels = []
+            val_pairs = []
+            val_labels = []
+            test_pairs = []
+            test_labels = []
+            
+            # Load each split based on the mapping
+            for file_id, split_name in self.split_mapping.items():
+                cache_file = os.path.join(nli_cache_dir, f"{file_id}.pkl")
+                if not os.path.exists(cache_file):
+                    raise FileNotFoundError(f"Cache file not found: {cache_file}")
+                
+                with open(cache_file, 'rb') as f:
+                    cache_data = pickle.load(f)
+                    
+                if split_name == 'train':
+                    train_pairs = cache_data['pairs']
+                    train_labels = cache_data['labels']
+                elif split_name == 'val':
+                    val_pairs = cache_data['pairs']
+                    val_labels = cache_data['labels']
+                elif split_name == 'test':
+                    test_pairs = cache_data['pairs']
+                    test_labels = cache_data['labels']
+            
+            return train_pairs, train_labels, val_pairs, val_labels, test_pairs, test_labels
+            
+        except Exception as e:
+            self.logger.error(f"Error loading NLI cache: {str(e)}")
+            raise
+
+    def prepare_training_data(self, train_df=None, val_df=None, concept_df=None, nli_cache_dir=None):
+        """
+        Prepare training data either from NLI cache or by generating new pairs
+        """
+        # Try loading from NLI cache first if directory is provided
+        if nli_cache_dir:
+            try:
+                return self.load_from_nli_cache(nli_cache_dir)
+            except Exception as e:
+                self.logger.warning(f"Failed to load from NLI cache: {str(e)}")
+                if train_df is None or val_df is None or concept_df is None:
+                    raise ValueError("Raw data not provided as fallback")
+        
+        # Fall back to generating pairs if NLI cache loading fails or isn't requested
+        if not all([train_df is not None, val_df is not None, concept_df is not None]):
+            raise ValueError("Missing required dataframes for pair generation")
+            
+        # Check if processed pairs exist
+        if os.path.exists('processed_pairs.pkl'):
+            self.logger.info("Loading pre-processed pairs from disk")
+            with open('processed_pairs.pkl', 'rb') as f:
+                pairs_data = pickle.load(f)
+            return (pairs_data['train_pairs'], pairs_data['train_labels'],
+                   pairs_data['val_pairs'], pairs_data['val_labels'],
+                   pairs_data.get('test_pairs', []), pairs_data.get('test_labels', []))
+
+        # Rest of the existing prepare_training_data implementation...
+        def create_pairs(row, concepts_dict):
+            desc = row['combined_text']
+            true_concept = row['concept']
+            pairs = []
+            labels = []
+            
+            pairs.append((desc, concepts_dict[true_concept]))
+            labels.append(1)
+            
+            other_concepts = [c for c in concepts_dict.keys() if c != true_concept]
+            selected_negative = np.random.choice(other_concepts, size=2, replace=False)
+            for neg_concept in selected_negative:
+                pairs.append((desc, concepts_dict[neg_concept]))
+                labels.append(0)
+            
+            return pairs, labels
+
+        concepts_dict = dict(zip(concept_df['concept'], concept_df['concept_definition']))
+        
+        with ThreadPoolExecutor() as executor:
+            train_results = list(executor.map(
+                lambda row: create_pairs(row, concepts_dict),
+                [row for _, row in train_df.iterrows()]
+            ))
+            
+            val_results = list(executor.map(
+                lambda row: create_pairs(row, concepts_dict),
+                [row for _, row in val_df.iterrows()]
+            ))
+
+        train_pairs = [pair for result in train_results for pair in result[0]]
+        train_labels = [label for result in train_results for label in result[1]]
+        val_pairs = [pair for result in val_results for pair in result[0]]
+        val_labels = [label for result in val_results for label in result[1]]
+
+        # Save pairs to disk
+        pairs_data = {
+            'train_pairs': train_pairs,
+            'train_labels': train_labels,
+            'val_pairs': val_pairs,
+            'val_labels': val_labels
+        }
+        
+        save_path = 'processed_pairs.pkl'
+        self.logger.info(f"Saving processed pairs to {save_path}")
+        with open(save_path, 'wb') as f:
+            pickle.dump(pairs_data, f)
+            
+        return train_pairs, train_labels, val_pairs, val_labels, [], []
+
+
+
+
+
+
+
+
 def compute_metrics(eval_pred):
     """Compute metrics for evaluation without downloading"""
     predictions, labels = eval_pred
