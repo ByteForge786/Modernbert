@@ -1,7 +1,7 @@
 # 1. Add this constant at the top of the file, after the imports:
 MAX_SEQUENCE_LENGTH = 512  # Maximum sequence length for BERT models
 
-# 2. Update NLIDataset class:
+# 2. The only needed change in NLIDataset class is to use the constant:
 class NLIDataset(Dataset):
     def __init__(self, data: pd.DataFrame, tokenizer, max_length: int = MAX_SEQUENCE_LENGTH):
         """Initialize NLI dataset"""
@@ -10,23 +10,10 @@ class NLIDataset(Dataset):
         self.premises = data['premise'].tolist()
         self.hypotheses = data['hypothesis'].tolist()
         self.labels = [LABEL_MAP[label] for label in data['label']]
+    
+    # Rest of the class remains exactly the same
 
-    def __getitem__(self, idx):
-        encoded = self.tokenizer(
-            self.premises[idx],
-            self.hypotheses[idx],
-            truncation=True,
-            max_length=self.max_length,
-            padding='max_length',
-            return_tensors='pt'
-        )
-        return {
-            'input_ids': encoded['input_ids'].squeeze(0),
-            'attention_mask': encoded['attention_mask'].squeeze(0),
-            'label': self.labels[idx]
-        }
-
-# 3. Update DataCollator initialization:
+# 3. Update DataCollator initialization in train_nli_model function:
 data_collator = DataCollatorWithPadding(
     tokenizer=tokenizer,
     padding=True,
@@ -35,7 +22,7 @@ data_collator = DataCollatorWithPadding(
     return_tensors="pt"
 )
 
-# 4. Update NLIPredictor class predict method:
+# 4. Update the predict methods in NLIPredictor class to use the constant:
 def predict(self, premise: str, hypothesis: str) -> Dict:
     """Make NLI prediction following standard format"""
     inputs = self.tokenizer(
@@ -43,28 +30,20 @@ def predict(self, premise: str, hypothesis: str) -> Dict:
         hypothesis,
         padding=True,
         truncation=True,
-        max_length=MAX_SEQUENCE_LENGTH,
+        max_length=MAX_SEQUENCE_LENGTH,  # Use constant here
         return_tensors="pt"
     )
 
-# 5. Update NLIPredictor class predict_batch method:
 def predict_batch(self, data: pd.DataFrame, batch_size: int = 32) -> pd.DataFrame:
-    """Batch prediction for multiple examples"""
-    results = []
-    
-    for i in tqdm(range(0, len(data), batch_size)):
-        batch = data.iloc[i:i+batch_size]
-        inputs = self.tokenizer(
-            batch['premise'].tolist(),
-            batch['hypothesis'].tolist(),
-            padding=True,
-            truncation=True,
-            max_length=MAX_SEQUENCE_LENGTH,
-            return_tensors="pt"
-        )
-
-
-
+    # Only change the max_length parameter in the tokenizer call
+    inputs = self.tokenizer(
+        batch['premise'].tolist(),
+        batch['hypothesis'].tolist(),
+        padding=True,
+        truncation=True,
+        max_length=MAX_SEQUENCE_LENGTH,  # Use constant here
+        return_tensors="pt"
+    )
 
 
 
