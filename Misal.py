@@ -1,3 +1,43 @@
+def compute_metrics(eval_pred):
+    """Compute metrics for evaluation without downloading"""
+    predictions, labels = eval_pred
+    predictions = np.argmax(predictions, axis=1)
+    
+    # Calculate accuracy manually
+    accuracy = (predictions == labels).mean()
+    
+    # Calculate confusion matrix values
+    cm = confusion_matrix(labels, predictions)
+    tn, fp, fn, tp = cm.ravel()
+    
+    # Calculate precision, recall, f1
+    precision = tp / (tp + fp) if (tp + fp) != 0 else 0
+    recall = tp / (tp + fn) if (tp + fn) != 0 else 0
+    f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+    
+    # Calculate specificity and negative predictive value
+    specificity = tn / (tn + fp) if (tn + fp) != 0 else 0
+    npv = tn / (tn + fn) if (tn + fn) != 0 else 0
+    
+    return {
+        'accuracy': float(accuracy),
+        'f1': float(f1),
+        'precision': float(precision),
+        'recall': float(recall),
+        'specificity': float(specificity),
+        'npv': float(npv),
+        'true_positives': int(tp),
+        'true_negatives': int(tn),
+        'false_positives': int(fp),
+        'false_negatives': int(fn)
+    }
+
+
+
+
+
+
+
 # 1. Add constant at the top after imports
 MAX_SEQUENCE_LENGTH = 512  # Maximum sequence length for BERT models
 
