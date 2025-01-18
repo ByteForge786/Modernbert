@@ -1,3 +1,139 @@
+def predict_batch(self, texts, batch_size=32):
+        """
+        Make predictions for a batch of texts
+        Args:
+            texts (list): List of strings to classify
+            batch_size (int): Batch size for prediction
+        Returns:
+            predictions (list): List of predicted concept labels
+            confidences (list): List of highest confidence scores
+            all_probs (list): List of probability distributions over all concepts
+        """
+        self.model.eval()
+        predictions = []
+        confidences = []
+        all_probs = []
+        
+        # Process texts in batches
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i:i + batch_size]
+            
+            # Tokenize batch
+            inputs = self.tokenizer(
+                batch_texts,
+                padding=True,
+                truncation=True,
+                max_length=128,
+                return_tensors="pt"
+            )
+            
+            # Move to same device as model
+            inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+            
+            with torch.no_grad():
+                outputs = self.model(**inputs)
+                logits = outputs.logits
+                probs = torch.softmax(logits, dim=-1)
+                
+                batch_predictions = torch.argmax(logits, dim=-1)
+                batch_confidences = torch.max(probs, dim=-1).values
+                
+                predictions.extend([self.idx_to_concept[pred.item()] for pred in batch_predictions])
+                confidences.extend(batch_confidences.cpu().numpy().tolist())
+                all_probs.extend(probs.cpu().numpy().tolist())
+        
+        return predictions, confidences, all_probs
+
+def process_csv(predictor, input_csv, output_csv, text_col=None, label_col=None):
+    """Process CSV file and generate predictions"""
+    logger.info(f"Reading input CSV: {input_csv}")
+    df = pd.read_csv(input_csv)
+    
+    # If text column not specified, try to find it
+    if text_col is None:
+        if 'combined_text' in df.columns:
+            text_col = 'combined_text'
+        elif 'attribute_name' in df.columns and 'description' in df.columns:
+            df['combined_text'] = df['attribute_name'] + ' - ' + df['description']
+            text_col = 'combined_text'
+        else:
+            raise ValueError("Could not determine text column. Please specify using --text_col")
+    
+    # Make predictions
+    predictions, confidences, all_probabilities = predictor.predict_batch(df[text_col].tolist())
+    
+    # Add predictions and confidence to dataframe
+    df['predicted_concept'] = predictions
+    df['confidence'] = confidences
+    
+    # Add top 3 predictions with their confidences
+    top_k = 3
+    top_predictions = []
+    top_confidences = []
+    
+    for probs in all_probabilities:
+        # Get top k indices and their probabilities
+        top_k_indices = np.argsort(probs)[-top_k:][::-1]
+        top_k_probs = np.array(probs)[top_k_indices]
+        
+        # Convert indices to concept labels
+        top_k_labels = [predictor.idx_to_concept[idx] for idx in top_k_indices]
+        
+        # Format predictions and confidences
+        top_predictions.append(' | '.join(top_k_labels))
+        top_confidences.append(' | '.join([f'{prob:.4f}' for prob in top_k_probs]))
+    
+    df['top_3_predictions'] = top_predictions
+    df['top_3_confidences'] = top_confidences
+    
+    # If original labels are available, compute metrics
+    if label_col and label_col in df.columns:
+        logger.info("Computing classification metrics...")
+        report = classification_report(
+            df[label_col],
+            predictions,
+            output_dict=True,
+            zero_division=0
+        )
+        
+        # Log detailed metrics
+        logger.info("\nClassification Report:")
+        for label in sorted(report.keys()):
+            if label in ['accuracy', 'macro avg', 'weighted avg']:
+                continue
+            metrics = report[label]
+            logger.info(f"\nConcept: {label}")
+            logger.info(f"Precision: {metrics['precision']:.3f}")
+            logger.info(f"Recall: {metrics['recall']:.3f}")
+            logger.info(f"F1-Score: {metrics['f1-score']:.3f}")
+            logger.info(f"Support: {metrics['support']}")
+            
+            # Additional statistics
+            correct_predictions = len(df[(df[label_col] == label) & (df['predicted_concept'] == label)])
+            total_predictions = len(df[df['predicted_concept'] == label])
+            total_actual = len(df[df[label_col] == label])
+            
+            logger.info(f"Correct Predictions: {correct_predictions}")
+            logger.info(f"Total Predictions: {total_predictions}")
+            logger.info(f"Actual Occurrences: {total_actual}")
+        
+        logger.info(f"\nOverall Accuracy: {report['accuracy']:.3f}")
+        logger.info(f"Macro F1: {report['macro avg']['f1-score']:.3f}")
+        
+        # Save metrics to a separate file
+        metrics_file = output_csv.rsplit('.', 1)[0] + '_metrics.json'
+        with open(metrics_file, 'w') as f:
+            json.dump(report, f, indent=2)
+        logger.info(f"Detailed metrics saved to: {metrics_file}")
+    
+    # Save results
+    logger.info(f"Saving predictions to: {output_csv}")
+    df.to_csv(output_csv, index=False)
+
+
+
+
+
 model_config = self.model.config
             model_config.id2label = {str(idx): label for idx, label in self.idx_to_concept.items()}
             model_config.label2id = {label: idx for idx, label in self.idx_to_concept.items()}
