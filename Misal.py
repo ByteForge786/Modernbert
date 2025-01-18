@@ -1,3 +1,32 @@
+model_config = self.model.config
+            model_config.id2label = {str(idx): label for idx, label in self.idx_to_concept.items()}
+            model_config.label2id = {label: idx for idx, label in self.idx_to_concept.items()}
+            model_config.best_metric = trainer.state.best_metric
+            model_config.save_pretrained(best_model_path)
+            
+            # Save training metrics history
+            metrics_path = os.path.join(best_model_path, "training_metrics.json")
+            training_history = {
+                'log_history': trainer.state.log_history,
+                'best_metric': trainer.state.best_metric,
+                'best_model_checkpoint': trainer.state.best_model_checkpoint,
+                'best_metric_value': trainer.state.best_metric_value,
+                'label_mapping': {
+                    'id2label': model_config.id2label,
+                    'label2id': model_config.label2id
+                }
+            }
+            with open(metrics_path, 'w') as f:
+                json.dump(training_history, f, indent=2)
+            
+            self.best_model_path = best_model_path
+
+
+
+
+
+
+
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
